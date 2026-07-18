@@ -36,9 +36,9 @@ def conditional_router(state: CinemaAgentState) -> Literal["showtime_node", "boo
     clean_msg = last_message.lower().strip()
     
     # 1. Handle affirmative shortcuts mid-funnel to prevent state leaking
-    if status in ["selecting_showtime", "holding_seats"]:
+    if status in ["selecting_showtime", "holding_seats", "awaiting_payment"]:
         if clean_msg in ["ok", "yes", "yup", "haan", "theek hai", "sure", "confirm"]:
-            return "booking_node" if status == "holding_seats" else "showtime_node"
+            return "booking_node" if status in ["holding_seats", "awaiting_payment"] else "showtime_node"
 
     # 2. Run live AI intent mapping
     try:
@@ -50,7 +50,7 @@ def conditional_router(state: CinemaAgentState) -> Literal["showtime_node", "boo
         if analysis.intent == "book_ticket":
             return "booking_node"
             
-        if analysis.intent == "general_chat" and status not in ["selecting_showtime", "holding_seats"]:
+        if analysis.intent == "general_chat" and status not in ["selecting_showtime", "holding_seats", "awaiting_payment"]:
             return "chat_node"
             
     except Exception as e:
@@ -59,7 +59,7 @@ def conditional_router(state: CinemaAgentState) -> Literal["showtime_node", "boo
     # 3. Fallback to active state machine tracking
     if status == "selecting_showtime":
         return "showtime_node"
-    elif status == "holding_seats":
+    elif status in ["holding_seats", "awaiting_payment"]:
         return "booking_node"
         
     return "chat_node"
