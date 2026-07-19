@@ -2,64 +2,78 @@ import os
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
-from dotenv import load_dotenv
-from agents.state import CinemaAgentState
+from langchain_core.messages import HumanMessage
 
-load_dotenv()
-
-class IntentSchema(BaseModel):
-    """Structured analysis of the user's latest message to determine workflow routing."""
-    intent: Literal["check_showtimes", "book_ticket", "general_chat"] = Field(
-        description=(
-            "Choose 'check_showtimes' if the customer is asking about what movies are playing, show schedules, or timings. "
-            "Choose 'book_ticket' if they want to select seats, provide booking info, or hold tickets. "
-            "Choose 'general_chat' for greetings, casual chit-chat, or generic cinema info."
-        )
-    )
-    extracted_movie: str = Field(
-        default="",
-        description="The clean name of the movie the user mentioned (e.g. 'Spider-Man', 'The Odyssey'). If none, leave empty."
+# 1. Structured Output Schema with Robust Fallback Documentation
+class IntentAnalyzer(BaseModel):
+    """Analyzes the user's incoming message to categorize their immediate action query."""
+    intent: Literal["general_chat", "check_showtimes", "book_ticket"] = Field(
+        default="general_chat",
+        description="Categorize the user text. 'check_showtimes' for inquiries about movies, lists, timings, or playing schedules. 'book_ticket' for payment or reservation requests. Use 'general_chat' for greetings, casual remarks, typos, or unclear single words."
     )
 
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile", 
-    temperature=0, 
-    groq_api_key=os.getenv("GROQ_API_KEY")
-)
-
-structured_llm = llm.with_structured_output(IntentSchema)
-
-def conditional_router(state: CinemaAgentState) -> Literal["showtime_node", "booking_node", "chat_node"]:
-    """Dynamically routes traffic, ensuring operational states are preserved during confirmations."""
-    status = state.get("booking_status", "browsing")
-    last_message = state["messages"][-1].content if state["messages"] else ""
-    clean_msg = last_message.lower().strip()
+def conditional_router(state: dict) -> str:
+    """
+    Defensive Traffic Router optimized for Groq. Maps out execution flow based on intent 
+    extraction and handles conversational trap escapes cleanly.
+    """
+    messages = state.get("messages", [])
+    booking_status = state.get("booking_status", "browsing")
     
-    # 1. Handle affirmative shortcuts mid-funnel to prevent state leaking
-    if status in ["selecting_showtime", "holding_seats", "awaiting_payment"]:
-        if clean_msg in ["ok", "yes", "yup", "haan", "theek hai", "sure", "confirm"]:
-            return "booking_node" if status in ["holding_seats", "awaiting_payment"] else "showtime_node"
+    if not messages:
+        return "chat_node"
+        
+    # Isolate the latest incoming user payload turn
+    last_message = messages[-1].content.strip()
+    
+    # PRE-ERROR DEFENSE: Instant Escape for Punctuation or Empty Inputs
+    # Bypasses Groq API completely for raw characters or short greetings to save rate limits
+    if last_message in ["?", "??", "hello", "hey", "hi", "assalam alaikum", "aoa"] or len(last_message) <= 2:
+        print("🛡️ [Pre-emptive Router Defense]: Short query or punctuation detected. Forcing 'chat_node'.")
+        return "chat_node"
 
-    # 2. Run live AI intent mapping
+    # PRE-ERROR DEFENSE: Missing API Key Guard
+    if not os.getenv("GROQ_API_KEY"):
+        print("❌ [Critical Environment Error]: GROQ_API_KEY is completely missing from your .env file!")
+        return "chat_node"
+
+    # Initialize Groq LLM with deterministic temperature
+    # Using the high-powered Llama 3.3 70b model for accurate structured extraction
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile", 
+        temperature=0,
+        max_retries=2 # Pre-emptively retry if Groq hits a brief connection blip
+    ) 
+    
+    # Bind the structured Pydantic parser to Llama
+    structured_llm = llm.with_structured_output(IntentAnalyzer)
+    
+    # 2. Try-Except Gatekeeping Core for Groq API
     try:
+        # Request structured categorization schema from Llama
         analysis = structured_llm.invoke(last_message)
+        extracted_intent = analysis.intent
+        print(f"🔮 [Groq Router Analysis] Extracted Intent: '{extracted_intent}' | Session Status: '{booking_status}'")
         
-        if analysis.intent == "check_showtimes":
-            return "showtime_node"
-            
-        if analysis.intent == "book_ticket":
-            return "booking_node"
-            
-        if analysis.intent == "general_chat" and status not in ["selecting_showtime", "holding_seats", "awaiting_payment"]:
-            return "chat_node"
-            
-    except Exception as e:
-        print(f"\n⚠️ [Router Intent Analysis Issue]: {e}")
+    except Exception as groq_exception:
+        # PRE-ERROR DEFENSE: Groq Rate Limit (429) or JSON Parsing Failure Recovery
+        # If Groq throttles your requests or fails to format the JSON string properly,
+        # catch the crash gracefully and fallback to normal conversation instead of throwing a 500 error.
+        print(f"⚠️ [Groq Router Exception Intercepted]: {groq_exception}. Defaulting safely to chat node.")
+        return "chat_node"
+
+    # 3. Defensive Decoupling Resolution Mapping
+    # PRE-ERROR DEFENSE: Sticky Trap Override
+    # Break out of any persistent node state loops immediately if the intent points to regular conversation.
+    if extracted_intent == "general_chat":
+        return "chat_node"
         
-    # 3. Fallback to active state machine tracking
-    if status == "selecting_showtime":
+    # Route to transactional nodes based on intent analysis
+    if extracted_intent == "check_showtimes":
         return "showtime_node"
-    elif status in ["holding_seats", "awaiting_payment"]:
-        return "booking_node"
         
+    if extracted_intent == "book_ticket":
+        return "booking_node"
+
+    # Ultimate safety net fallback
     return "chat_node"
