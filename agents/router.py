@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 
+from agents.state import CinemaAgentState
+
 # 1. Structured Output Schema with Robust Fallback Documentation
 class IntentAnalyzer(BaseModel):
     """Analyzes the user's incoming message to categorize their immediate action query."""
@@ -12,7 +14,7 @@ class IntentAnalyzer(BaseModel):
         description="Categorize the user text. 'check_showtimes' for inquiries about movies, lists, timings, or playing schedules. 'book_ticket' for payment or reservation requests. Use 'general_chat' for greetings, casual remarks, typos, or unclear single words."
     )
 
-def conditional_router(state: dict) -> str:
+def conditional_router(state: CinemaAgentState) -> str:
     """
     Defensive Traffic Router optimized for Groq. Maps out execution flow based on intent 
     extraction and handles conversational trap escapes cleanly.
@@ -57,14 +59,11 @@ def conditional_router(state: dict) -> str:
         
     except Exception as groq_exception:
         # PRE-ERROR DEFENSE: Groq Rate Limit (429) or JSON Parsing Failure Recovery
-        # If Groq throttles your requests or fails to format the JSON string properly,
-        # catch the crash gracefully and fallback to normal conversation instead of throwing a 500 error.
         print(f"⚠️ [Groq Router Exception Intercepted]: {groq_exception}. Defaulting safely to chat node.")
         return "chat_node"
 
     # 3. Defensive Decoupling Resolution Mapping
     # PRE-ERROR DEFENSE: Sticky Trap Override
-    # Break out of any persistent node state loops immediately if the intent points to regular conversation.
     if extracted_intent == "general_chat":
         return "chat_node"
         
