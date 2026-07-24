@@ -8,16 +8,11 @@ from agents.state import CinemaAgentState
 from agents.tools import fetch_movies, fetch_showtimes, reserve_seats
 
 
-# ------------------------------------------------------------------
-# Structured schema for reliable booking parameter extraction
-# (same pattern as router.py's IntentAnalyzer — forces valid output,
-#  the model can't "think out loud" and break the parser like free text does)
-# ------------------------------------------------------------------
 class BookingExtraction(BaseModel):
     """Extracts the showtime code and ticket count the user wants to book."""
     showtime_id: str = Field(
         default="UNKNOWN",
-        description="The showtime code mentioned, e.g. 'st_201'. Output exactly 'UNKNOWN' if none is found anywhere in the conversation or context."
+        description="The internal showtime code (e.g. 'st_201') that matches what the user described. Output exactly 'UNKNOWN' if you cannot confidently match one."
     )
     num_tickets: int = Field(
         default=0,
@@ -51,7 +46,12 @@ def showtime_node(state: CinemaAgentState) -> CinemaAgentState:
         elif "TRIGGER_FETCH_SHOWTIMES" in extraction_response:
             extracted_param = extraction_response.split(":")[-1].strip()
             db_output = fetch_showtimes.invoke({"movie_title_query": extracted_param})
-            state["movie_title"] = extracted_param  # remember what movie they're browsing
+            state["movie_title"] = extracted_param
+            state["available_showtimes_context"] = db_output
+    # Clear any previously selected showtime — a new movie query means the old
+    # selection is stale and must NOT be silently reused by booking_node.
+            state["showtime_id"] = ""
+            state["num_tickets"] = 0
         else:
             db_output = fetch_movies.invoke({})
 
@@ -72,13 +72,13 @@ def showtime_node(state: CinemaAgentState) -> CinemaAgentState:
         "- If the user wrote in Roman Urdu (or mixed), reply in natural Roman Urdu + English mix as spoken in Lahore.\n"
         "GROUNDING RULES (CRITICAL — DO NOT BREAK):\n"
         "- ONLY state facts that literally appear in the Database Query Results above. Never invent showtimes, screens, prices, or seat numbers that aren't in that data.\n"
-        "- This cinema does NOT have individual seat selection — only a TOTAL SEAT COUNT per showtime. NEVER mention specific seat numbers or rows (e.g. 'D-13', 'middle row'). If asked about seats, say only how many are available in total.\n"
-        "- NEVER say a booking or reservation is confirmed. You are only showing information — actual booking happens in a separate step you don't control.\n"
+        "- This cinema does NOT have individual seat selection — only a TOTAL SEAT COUNT per showtime. NEVER mention specific seat numbers or rows. If asked about seats, say only how many are available in total.\n"
+        "- NEVER say a booking or reservation is confirmed. You are only showing information.\n"
+        "- CRITICAL: NEVER show internal codes like 'st_201' to the user. Describe each showtime naturally by TIME and SCREEN/LOCATION only (e.g. 'the 4:00 PM show at Gold Screen 1'). The codes are for internal use only.\n"
         "FORMATTING:\n"
         "- Use WhatsApp markdown: *bold* for movie names/headings, bullet points (-) for showtime lists.\n"
         "- Keep it snappy and casual — no long paragraphs, no corporate tone.\n"
-        "- Always show the showtime code (e.g. st_201) clearly next to each option.\n"
-        "- End by asking which showtime CODE they want and how many tickets — never ask about seats."
+        "- End by naturally asking which showTIME they'd like (describe it, e.g. 'the 4pm one or the 8:30pm one?') and how many tickets — never mention a code."
     )
 
     try:
@@ -86,18 +86,17 @@ def showtime_node(state: CinemaAgentState) -> CinemaAgentState:
         state["messages"].append(final_message)
     except Exception as format_error:
         print(f"❌ [Formatting Error]: {format_error}")
-        state["messages"].append(AIMessage(content=f"Yahan hain latest listings:\n{db_output}"))
+        state["messages"].append(AIMessage(content=f"Here's what's showing:\n{db_output}"))
 
     return state
 
 
 def booking_node(state: CinemaAgentState) -> CinemaAgentState:
     """
-    Real booking node. Extracts showtime code + ticket count using STRUCTURED
-    OUTPUT (not fragile string parsing), falling back to whatever was already
-    confirmed earlier in this session (state persistence) if the current
-    message doesn't restate it. Never fabricates a confirmation — every reply
-    here is generated ONLY from the actual reserve_seats() result.
+    Real booking node. Matches the user's NATURAL-LANGUAGE description (e.g.
+    "the 4pm one", "gold screen", "the earlier show") against the hidden
+    showtime data captured earlier in this session, resolving it to a real
+    showtime_id internally. The user never needs to know or say any code.
     """
     raw_history = state.get("messages", [])
     bounded_messages = raw_history[-8:] if len(raw_history) > 8 else raw_history
@@ -105,6 +104,7 @@ def booking_node(state: CinemaAgentState) -> CinemaAgentState:
 
     known_showtime_id = state.get("showtime_id", "")
     known_num_tickets = state.get("num_tickets", 0)
+    available_context = state.get("available_showtimes_context", "")
 
     llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
@@ -112,9 +112,12 @@ def booking_node(state: CinemaAgentState) -> CinemaAgentState:
         structured_llm = llm.with_structured_output(BookingExtraction)
         extraction_prompt = (
             "You are a booking parameter extractor for Cue Cinema.\n"
-            f"Context already confirmed earlier in this session (may be empty): showtime_id='{known_showtime_id}', num_tickets={known_num_tickets}\n"
-            "Look at the conversation and find the showtime CODE (e.g. 'st_201') and number of tickets the user wants.\n"
-            "If the current messages don't restate one of these, use the already-known value shown above instead of guessing."
+            f"Here is the showtime data that was shown to the user earlier (codes are internal, the user never saw them):\n{available_context}\n\n"
+            f"Already confirmed earlier in this session (may be empty): showtime_id='{known_showtime_id}', num_tickets={known_num_tickets}\n"
+            "The user will describe their choice NATURALLY (e.g. 'the 4pm one', 'gold screen', 'the earlier show', 'that one you said') "
+            "— match their description against the showtime data above and output the matching internal showtime_id.\n"
+            "If the current messages don't restate a choice, use the already-known value shown above instead of guessing.\n"
+            "If you truly cannot match anything confidently, output 'UNKNOWN'."
         )
         payload = [SystemMessage(content=extraction_prompt)] + bounded_messages
         extraction = structured_llm.invoke(payload)
@@ -125,13 +128,13 @@ def booking_node(state: CinemaAgentState) -> CinemaAgentState:
 
         if not showtime_id:
             state["messages"].append(AIMessage(
-                content="Konsi showtime book karni hai bhai? Pehle showtime code bata dein (jaise st_201) 🎬"
+                content="Which showtime would you like — and for which movie? Just tell me the time that works for you 🎬"
             ))
             return state
 
     except Exception as e:
         print(f"⚠️ [Booking Extraction Error]: {e}")
-        state["messages"].append(AIMessage(content="Thora issue aagaya booking mein, dobara try karein please 🙏"))
+        state["messages"].append(AIMessage(content="Sorry, something went wrong on my end — could you try that again? 🙏"))
         return state
 
     state["showtime_id"] = showtime_id
@@ -145,7 +148,7 @@ def booking_node(state: CinemaAgentState) -> CinemaAgentState:
         })
     except Exception as db_error:
         print(f"❌ [Booking DB Error]: {db_error}")
-        state["messages"].append(AIMessage(content="Booking system mein issue hai abhi, thodi der mein try karein 🙏"))
+        state["messages"].append(AIMessage(content="There's an issue with the booking system right now — please try again shortly 🙏"))
         return state
 
     if not result.get("success"):
@@ -156,7 +159,7 @@ def booking_node(state: CinemaAgentState) -> CinemaAgentState:
     reply = (
         f"🎬 *{result['movie_title']}* — {result['show_time']} ({result['screen']})\n"
         f"Tickets: {result['num_tickets']} | Total: {result['total_amount']} PKR\n\n"
-        f"Booking confirm karne ke liye yahan click karein 👇\n{result['payment_link']}"
+        f"Click below to confirm your booking 👇\n{result['payment_link']}"
     )
     state["messages"].append(AIMessage(content=reply))
     return state
@@ -168,13 +171,13 @@ def chat_node(state: CinemaAgentState) -> CinemaAgentState:
     chat_instruction = (
         "You are 'Cue', the friendly WhatsApp buddy for Cue Cinema — not a formal assistant, more like a helpful friend texting back.\n"
         "LANGUAGE RULES (STRICT MIRRORING):\n"
-        "- Reply in the SAME language the user just used. Do not switch languages on your own.\n"
-        "- If the user wrote in English, reply in English only.\n"
-        "- If the user wrote in Roman Urdu (or mixed), reply in natural Roman Urdu + English mix as spoken in Lahore.\n"
+        "- Default to ENGLISH. Only switch to a Roman Urdu + English mix if the USER writes in Roman Urdu first. Never initiate in Roman Urdu.\n"
+        "- Once the user has written in Roman Urdu, you can mirror that naturally for the rest of the conversation.\n"
         "- Never sound like a corporate script. Think casual friend, not call center.\n"
         "GROUNDING RULES (CRITICAL — DO NOT BREAK):\n"
-        "- You have NO access to real movie/showtime/booking data in this node. NEVER state specific showtimes, prices, seat numbers, or confirm any booking here — you don't have that information.\n"
-        "- If the user asks about seats, a specific booking status, or anything requiring real data, gently redirect them to ask about movies/showtimes so the right lookup can happen, instead of guessing.\n"
+        "- You have NO access to real movie/showtime/booking data in this node. NEVER state specific showtimes, prices, seat numbers, or confirm any booking here.\n"
+        "- Never mention internal codes like 'st_201' — the user should never see these.\n"
+        "- If the user asks about seats, a specific booking status, or anything requiring real data, gently redirect them to ask about movies/showtimes.\n"
         "- This cinema does NOT support individual seat selection at all — never mention seat letters/numbers/rows.\n"
         "TONE:\n"
         "- Short, warm, a little playful. Use casual punctuation and the occasional emoji (🎬🍿) where it fits.\n"
@@ -186,7 +189,7 @@ def chat_node(state: CinemaAgentState) -> CinemaAgentState:
         state["messages"].append(response)
     except Exception as e:
         print(f"⚠️ [Chat Node Fallback]: {e}")
-        state["messages"].append(AIMessage(content="Heyy! Kya haal hai? 🎬"))
+        state["messages"].append(AIMessage(content="Hey! How can I help you today? 🎬"))
 
     return state
 

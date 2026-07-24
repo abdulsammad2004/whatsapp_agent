@@ -31,9 +31,8 @@ USER_SESSIONS = {}
 SESSION_LOCKS = {}
 
 WELCOME_MESSAGE = (
-    "Hello! 👋 Welcome to *Cue Cinema* 🎬\n"
-    "Main aap ki madad kar sakta hoon movies dekhne, showtimes check karne, "
-    "ya ticket book karne mein. Bas message karein, main yahan hoon!"
+    "Hello! Welcome to Cue Cinema. 🎬\n"
+    "I can help you check movies, showtimes, or book tickets — just tell me what you're looking for!"
 )
 
 @app.post("/webhook")

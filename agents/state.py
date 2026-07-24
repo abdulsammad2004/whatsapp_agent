@@ -7,6 +7,7 @@ class CinemaAgentState(TypedDict):
     user_phone: str
     movie_title: str
     showtime_id: str
-    num_tickets: int          # NEW — persists ticket count across turns
+    num_tickets: int
+    available_showtimes_context: str   # NEW — internal-only, holds codes for matching, never shown to user
     selected_seats: list[str]
     booking_status: str
