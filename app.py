@@ -135,27 +135,26 @@ async def confirm_payment(request: Request, booking_id: str):
         conn.commit()
     conn.close()
 
-    ticket_image_url = f"{PUBLIC_BASE_URL}/static/assets/ticket_confirmed.png"
+    # Use localhost, not the public ngrok URL — bridge and FastAPI are on the same machine,
+    # so this avoids an unnecessary round-trip through the public internet.
+    ticket_image_url = "http://127.0.0.1:8001/static/assets/ticket_confirmed.png"
+    print(f"🎫 [Attempting Ticket Send] To user_phone='{user_phone}'")
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{BRIDGE_URL}/send-image",
-                json={
+    async def send_ticket():
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(f"{BRIDGE_URL}/send-image", json={
                     "to": user_phone,
                     "image_url": ticket_image_url,
-                    "caption": "🎉 Aapki booking confirm ho gayi! Yeh hai aapka ticket 🎬",
-                },
-            )
-            print(f"✅ [Ticket Send Response]: {resp.status_code} - {resp.text}")
-    except Exception as send_err:
-        print(f"❌ [Bridge Send Error]: {type(send_err).__name__}: {send_err}")
+                    "caption": "🎉 Aapki booking confirm ho gayi! Yeh hai aapka ticket 🎬"
+                })
+                print(f"✅ [Ticket Send Response]: {resp.status_code} - {resp.text}")
+        except Exception as send_err:
+            print(f"❌ [Bridge Send Error]: {type(send_err).__name__}: {send_err}")
 
-    return templates.TemplateResponse(
-        request,
-        "payment_success.html",
-        {"booking_id": booking_id},
-    )
+    asyncio.create_task(send_ticket())  # fire-and-forget — page returns immediately, ticket sends in background
+
+    return templates.TemplateResponse(request, "payment_success.html", {"booking_id": booking_id})
 
 
 @app.post("/bridge-webhook")
