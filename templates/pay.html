@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Cue Cinema — Confirm Booking</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: linear-gradient(135deg, #0d0d0d, #1a1a1a);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .ticket-card {
+    background: linear-gradient(135deg, #f9d976, #f39c12);
+    border-radius: 16px;
+    max-width: 420px;
+    width: 100%;
+    padding: 32px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    color: #3a2a05;
+  }
+  .badge {
+    background: #2b1c04;
+    color: #f9d976;
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px dashed rgba(58,42,5,0.3);
+    font-size: 15px;
+  }
+  .row span:first-child { opacity: 0.7; }
+  .row span:last-child { font-weight: 700; }
+  .total-row {
+    margin-top: 16px;
+    font-size: 20px;
+    font-weight: 800;
+    display: flex;
+    justify-content: space-between;
+  }
+  button {
+    width: 100%;
+    margin-top: 24px;
+    padding: 16px;
+    background: #2b1c04;
+    color: #f9d976;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .note { text-align: center; font-size: 12px; margin-top: 14px; opacity: 0.7; }
+</style>
+</head>
+<body>
+  <div class="ticket-card">
+    <div class="badge">🎬 BOOKING CONFIRMATION</div>
+    <h1>{{ movie_title }}</h1>
+    <div class="row"><span>Show Time</span><span>{{ show_time }}</span></div>
+    <div class="row"><span>Screen</span><span>{{ screen }}</span></div>
+    <div class="row"><span>Tickets</span><span>{{ num_tickets }}</span></div>
+    <div class="row"><span>Booking ID</span><span>{{ booking_id }}</span></div>
+    <div class="total-row"><span>Total</span><span>{{ total_amount }} PKR</span></div>
+
+    <form action="/pay/{{ booking_id }}/confirm" method="post">
+      <button type="submit">Confirm & Pay {{ total_amount }} PKR</button>
+    </form>
+    <div class="note">Demo payment flow — no real charge will be made.</div>
+  </div>
+</body>
+</html>
