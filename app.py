@@ -1,6 +1,7 @@
 import os
 import asyncio
 import sqlite3
+import httpx
 from fastapi import FastAPI, Form, Response, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -11,13 +12,14 @@ from langchain_core.messages import HumanMessage
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from agents.graph import cinema_app
+from jinja2 import Environment, FileSystemLoader
 
 load_dotenv()
 
 app = FastAPI(title="Restored Cinema Gateway")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
-templates.env.cache = None
+templates.env = Environment(loader=FileSystemLoader("templates"), cache_size=0)
 
 DB_PATH = "database/cinema_ops.db"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000")
@@ -102,8 +104,8 @@ async def payment_page(request: Request, booking_id: str):
 
     booking_id, seats, total, status, title, show_time, screen = row
 
-    return templates.TemplateResponse("pay.html", {
-        "request": request,
+    return templates.TemplateResponse(
+    request, "pay.html", {
         "booking_id": booking_id,
         "movie_title": title,
         "show_time": show_time,
@@ -111,9 +113,10 @@ async def payment_page(request: Request, booking_id: str):
         "num_tickets": seats,
         "total_amount": total,
         "status": status
-    })
+    }
+)
 
-
+BRIDGE_URL = "http://127.0.0.1:3000"  # your Node bridge's local server
 @app.post("/pay/{booking_id}/confirm", response_class=HTMLResponse)
 async def confirm_payment(request: Request, booking_id: str):
     conn = sqlite3.connect(DB_PATH)
@@ -135,26 +138,24 @@ async def confirm_payment(request: Request, booking_id: str):
     ticket_image_url = f"{PUBLIC_BASE_URL}/static/assets/ticket_confirmed.png"
 
     try:
-        twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=user_phone,
-            body="🎉 Aapki booking confirm ho gayi! Yeh hai aapka ticket 🎬",
-            media_url=[ticket_image_url]
-        )
-        print(f"✅ [Ticket Sent] To: {user_phone}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{BRIDGE_URL}/send-image",
+                json={
+                    "to": user_phone,
+                    "image_url": ticket_image_url,
+                    "caption": "🎉 Aapki booking confirm ho gayi! Yeh hai aapka ticket 🎬",
+                },
+            )
+            print(f"✅ [Ticket Send Response]: {resp.status_code} - {resp.text}")
     except Exception as send_err:
-        print(f"❌ [Twilio Send Error]: {send_err}")
+        print(f"❌ [Bridge Send Error]: {type(send_err).__name__}: {send_err}")
 
-    return templates.TemplateResponse("payment_success.html", {"request": request, "booking_id": booking_id})
-
-from pydantic import BaseModel
-
-class BridgeMessage(BaseModel):
-    from_: str = None
-    text: str = None
-
-    class Config:
-        fields = {"from_": "from"}
+    return templates.TemplateResponse(
+        request,
+        "payment_success.html",
+        {"booking_id": booking_id},
+    )
 
 
 @app.post("/bridge-webhook")
@@ -200,4 +201,4 @@ async def bridge_webhook(payload: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("app:app", host="127.0.0.1", port=8001, reload=True)
